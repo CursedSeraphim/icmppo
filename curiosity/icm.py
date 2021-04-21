@@ -50,7 +50,9 @@ class ForwardModel(nn.Module):
         )
 
     def forward(self, state_latent: Tensor, action: Tensor):
-        action = self.action_encoder(action.long() if self.action_converter.discrete else action)
+        action = self.action_encoder(action.long() if self.action_converter.discrete else action).squeeze()
+        if len(action.shape) == 1:
+            action = action.unsqueeze(0)
         x = torch.cat((action, state_latent), dim=-1)
         x = self.hidden(x)
         return x
@@ -69,6 +71,52 @@ class InverseModel(nn.Module):
 
     def forward(self, state_latent: Tensor, next_state_latent: Tensor):
         return self.input(torch.cat((state_latent, next_state_latent), dim=-1))
+
+
+class CNNICMModel(ICMModel):
+    def __init__(self, state_converter: Converter, action_converter: Converter):
+        super().__init__(state_converter, action_converter)
+        n_input_channels = state_converter.shape[0]
+
+        # )
+        self.cnn = nn.Sequential(
+            nn.Conv2d(n_input_channels, 32, kernel_size=3, stride=2, padding=0),
+            nn.ReLU(),
+            nn.Conv2d(32, 64, kernel_size=3, stride=2, padding=0),
+            nn.ReLU(),
+            nn.Flatten(),
+        )
+        # Compute shape by doing one forward pass
+        with torch.no_grad():
+            n_flatten = self.cnn(
+                torch.rand(size= (1,) + state_converter.shape ).float()
+            ).shape[1]
+
+        self.linear = nn.Sequential(nn.Linear(n_flatten, 128), nn.ReLU())
+        self.encoder = nn.Sequential(self.cnn, self.linear)
+
+        self.forward_model = ForwardModel(action_converter, 128)
+        self.inverse_model = InverseModel(action_converter, 128)
+
+    @property
+    def recurrent(self) -> bool:
+        return False
+
+    def forward(self, state: Tensor, next_state: Tensor, action: Tensor):
+        state = self.encoder(state)
+        next_state = self.encoder(next_state)
+        next_state_hat = self.forward_model(state, action)
+        action_hat = self.inverse_model(state, next_state)
+        return next_state, next_state_hat, action_hat
+
+    @staticmethod
+    def factory() -> 'ICMModelFactory':
+        return CNNICMModelFactory()
+
+
+class CNNICMModelFactory(ICMModelFactory):
+    def create(self, state_converter: Converter, action_converter: Converter) -> ICMModel:
+        return CNNICMModel(state_converter, action_converter)
 
 
 class MlpICMModel(ICMModel):
@@ -149,12 +197,25 @@ class ICM(Curiosity):
         return self.model.parameters()
 
     def reward(self, rewards: np.ndarray, states: np.ndarray, actions: np.ndarray) -> np.ndarray:
+        if len(actions.shape) == 1:
+            actions = actions.reshape(1, -1)
+        if len(rewards.shape) == 1:
+            rewards = rewards.reshape(1, -1)
+        
         n, t = actions.shape[0], actions.shape[1]
-        states, next_states = states[:, :-1], states[:, 1:]
+        states, next_states = states[:-1], states[1:]
         states, next_states, actions = self._to_tensors(
             self.state_converter.reshape_as_input(states, self.model.recurrent),
             self.state_converter.reshape_as_input(next_states, self.model.recurrent),
             actions.reshape(n * t, *actions.shape[2:]))
+        if len(actions.shape) == 1:
+            actions = actions.reshape(1, -1)
+        if len(states.shape) == 3:
+            states = states.unsqueeze(0)
+        if len(next_states.shape) == 3:
+            next_states = next_states.unsqueeze(0)
+        states = states.float()
+        next_states = next_states.float()
         next_states_latent, next_states_hat, _ = self.model(states, next_states, actions)
         intrinsic_reward = self.reward_scale / 2 * (next_states_hat - next_states_latent).norm(2, dim=-1).pow(2)
         intrinsic_reward = intrinsic_reward.cpu().detach().numpy().reshape(n, t)
