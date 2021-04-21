@@ -78,7 +78,6 @@ class CNNICMModel(ICMModel):
         super().__init__(state_converter, action_converter)
         n_input_channels = state_converter.shape[0]
 
-        # )
         self.cnn = nn.Sequential(
             nn.Conv2d(n_input_channels, 32, kernel_size=3, stride=2, padding=0),
             nn.ReLU(),
