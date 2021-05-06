@@ -218,27 +218,28 @@ class ICM(Curiosity):
         next_states_latent, next_states_hat, _ = self.model(states, next_states, actions)
         intrinsic_reward = self.reward_scale / 2 * (next_states_hat - next_states_latent).norm(2, dim=-1).pow(2)
         intrinsic_reward = intrinsic_reward.cpu().detach().numpy().reshape(n, t)
-        self.reporter.scalar('icm/reward',
-                             intrinsic_reward.mean().item() if self.reporter.will_report('icm/reward') else 0)
+        # self.reporter.scalar('icm/reward',
+        #                      intrinsic_reward.mean().item() if self.reporter.will_report('icm/reward') else 0)
 
-        self.reporter.scalar('icm/reward_extrinsic',
-                             rewards.mean().item() if self.reporter.will_report('icm/reward_extrinsic') else 0)
+        # self.reporter.scalar('icm/reward_extrinsic',
+        #                      rewards.mean().item() if self.reporter.will_report('icm/reward_extrinsic') else 0)
 
-        rew = (1. - self.intrinsic_reward_integration) * rewards + self.intrinsic_reward_integration * intrinsic_reward
-        self.reporter.scalar('icm/reward_intrinsic_and_extrinsic',
-                             rew.mean().item() if self.reporter.will_report('icm/reward_intrinsic_and_extrinsic') else 0)
-        return rew
+        combined_reward = (1. - self.intrinsic_reward_integration) * rewards + self.intrinsic_reward_integration * intrinsic_reward
+        # self.reporter.scalar('icm/reward_intrinsic_and_extrinsic',
+        #                      combined_reward.mean().item() if self.reporter.will_report('icm/reward_intrinsic_and_extrinsic') else 0)
+        # return combined rewards, intrinsic rewards, extrinsic rewards
+        return combined_reward, intrinsic_reward, rewards
 
     def loss(self, policy_loss: Tensor, states: Tensor, next_states: Tensor, actions: Tensor) -> Tensor:
         next_states_latent, next_states_hat, actions_hat = self.model(states, next_states, actions)
         forward_loss = 0.5 * (next_states_hat - next_states_latent.detach()).norm(2, dim=-1).pow(2).mean()
         inverse_loss = self.action_converter.distance(actions_hat, actions)
         curiosity_loss = self.weight * forward_loss + (1 - self.weight) * inverse_loss
-        self.reporter.scalar('icm/loss_policy', policy_loss.item())
-        self.reporter.scalar('icm/loss_forward', forward_loss.item())
-        self.reporter.scalar('icm/loss_inverse', inverse_loss.item())
-        self.reporter.scalar('icm/loss', curiosity_loss.item())
-        return self.policy_weight * policy_loss + curiosity_loss
+        # self.reporter.scalar('icm/loss_policy', policy_loss.item())
+        # self.reporter.scalar('icm/loss_forward', forward_loss.item())
+        # self.reporter.scalar('icm/loss_inverse', inverse_loss.item())
+        # self.reporter.scalar('icm/loss', curiosity_loss.item())
+        return self.policy_weight * policy_loss + curiosity_loss, policy_loss, forward_loss, inverse_loss, curiosity_loss
 
     def to(self, device: torch.device, dtype: torch.dtype):
         super().to(device, dtype)
