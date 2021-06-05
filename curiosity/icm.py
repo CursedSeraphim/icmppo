@@ -73,59 +73,79 @@ class InverseModel(nn.Module):
         return self.input(torch.cat((state_latent, next_state_latent), dim=-1))
 
 
-# TODO creat enew class for ICMModel that predicts input space
 class ReconstructForwardModel(nn.Module):
-    # TODO combine action and 2d state in a sensible way
-    # could be (+) added to the image
-    # could be added as a channel to the image where each pixel in that channel replicates the scalar
-    # could down conv to 1x1, then add it, then up conv
-    # could down conv to 1x1,   , then up conv
+    """
+    class for ICMModel that predicts the 2d obs input space
+    creates action embedding of shape W*H, concatenates it to the input state as an additional channel, and creates a prediction with the same shape as input observations
+    """
     def __init__(self, action_converter: Converter, state_converter: Converter):
         super().__init__()
         self.action_converter = action_converter
-        action_latent_features = state_converter.shape[0] * state_converter.shape[1] * state_converter.shape[2]
+        self.state_converter = state_converter
+        # embedding of same shape as 2d state 1 channel
+        # TODO debug whether this is 11x11
+        action_latent_features = state_converter.shape[1] * state_converter.shape[2]
+        n_input_channels = state_converter.shape[0]
         if action_converter.discrete:
             self.action_encoder = nn.Embedding(action_converter.shape[0], action_latent_features)
         else:
             self.action_encoder = nn.Linear(action_converter.shape[0], action_latent_features)
 
-        # TODO rewrite to conv layers that take 2 * obs channels (because we will stack action encoder and state in forward)
+        # conv layers that take 2 * obs channels (because we will stack action encoder and state in forward)
         # and to produce the observation space shape as output (similar to reconstructICMModel zfnet style)
         self.hidden = nn.Sequential(
-            nn.Linear(action_latent_features + state_latent_features, 128),
-            nn.ReLU(inplace=True),
-            nn.Linear(128, 128),
-            nn.ReLU(inplace=True),
-            nn.Linear(128, state_latent_features)
+            nn.Conv2d(n_input_channels + 1, 32, kernel_size=3, stride=2, padding=0),
+            nn.ReLU(),
+            nn.Conv2d(32, 64, kernel_size=3, stride=2, padding=0),
+            nn.ReLU(),
+            nn.ConvTranspose2d(64, 32, kernel_size=3, stride=2, padding=0),
+            nn.ReLU(),
+            nn.ConvTranspose2d(32, n_input_channels, kernel_size=3, stride=2, padding=0),
         )
 
     def forward(self, state_latent: Tensor, action: Tensor):
-        # TODO rewrite to reshape action after encoder to (-1, 3, 11, 11) dynamically to obs space shape -1, C, H, W
         action = self.action_encoder(action.long() if self.action_converter.discrete else action).squeeze()
         if len(action.shape) == 1:
             action = action.unsqueeze(0)
-        # TODO stack encoded action and state along channels before giving to hidden
-        x = torch.cat((action, state_latent), dim=-1)
+        # reshape action after encoder to (-1, 1, 11, 11) dynamically to obs space shape -1, 1, H, W
+        action = action.reshape(-1, 1, self.state_converter.shape[1], self.state_converter.shape[2])
+        # stack encoded action and state along channels before giving to hidden
+        # TODO debug whether dim=1 is channels, I think 0 would be batch
+        x = torch.cat((action, state_latent), dim=1)
         x = self.hidden(x)
         return x
 
 
 class ReconstructInverseModel(nn.Module):
-    # TODO 2 2d states in a sensible way, concat channels, for instance
-    def __init__(self, action_converter: Converter, state_latent_features: int):
+    # 2d state and 2d next_state are combined by concatenating their channels
+    def __init__(self, action_converter: Converter, state_converter: Converter):
         super().__init__()
-        # TODO reuse implementation from ReconstructedForwardModel here that takes 2*C, H, W, as the 2 states are being stacked
-        self.input = nn.Sequential(
-            nn.Linear(state_latent_features * 2, 128),
-            nn.ReLU(inplace=True),
-            nn.Linear(128, 128),
-            nn.ReLU(inplace=True),
+        n_input_channels = state_converter.shape[0]
+        # reuse implementation from ReconstructedForwardModel here that takes 2*C, H, W, as the 2 states are being stacked
+        self.cnn = nn.Sequential(
+            nn.Conv2d(2*n_input_channels, 32, kernel_size=3, stride=2, padding=0),
+            nn.ReLU(),
+            nn.Conv2d(32, 64, kernel_size=3, stride=2, padding=0),
+            nn.ReLU(),
+            nn.Flatten()
+        )
+        # Compute shape by doing one forward pass
+        with torch.no_grad():
+            n_flatten = self.cnn(
+                torch.rand(size= (1,) + (state_converter.shape[0]*2, state_converter.shape[1], state_converter.shape[2]) ).float()
+            ).shape[1]
+        # plug in correct shapes for linear layer
+        self.linear = nn.Sequential(
+            nn.Linear(n_flatten, 128),
+            nn.ReLU(),
             action_converter.policy_out_model(128)
         )
+        self.input = nn.Sequential(self.cnn, self.linear)
 
     def forward(self, state_latent: Tensor, next_state_latent: Tensor):
-        # TODO stack states along channels before handing to self.input
-        return self.input(torch.cat((state_latent, next_state_latent), dim=-1))
+        # stack states along channels before handing to self.input
+        # TODO debug whether dim=1 is channels, I think 0 would be batch
+        return self.input(torch.cat((state_latent, next_state_latent), dim=1))
 
 
 class CNNICMReconstructModel(ICMModel):
@@ -143,8 +163,8 @@ class CNNICMReconstructModel(ICMModel):
             nn.ConvTranspose2d(32, n_input_channels, kernel_size=3, stride=2, padding=0),
         )
 
-        self.forward_model = ForwardModel(action_converter, 128)
-        self.inverse_model = InverseModel(action_converter, 128)
+        self.forward_model = ReconstructForwardModel(action_converter, state_converter)
+        self.inverse_model = ReconstructInverseModel(action_converter, state_converter)
 
     @property
     def recurrent(self) -> bool:
