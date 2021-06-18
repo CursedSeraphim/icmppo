@@ -75,7 +75,7 @@ class InverseModel(nn.Module):
 
 class ReconstructForwardModel(nn.Module):
     """
-    class for ICMModel that predicts the 2d obs input space
+    class for ICMModel that predicts the 3d obs input space
     creates action embedding of shape W*H, concatenates it to the input state as an additional channel, and creates a prediction with the same shape as input observations
     """
     def __init__(self, action_converter: Converter, state_converter: Converter):
@@ -326,7 +326,7 @@ class ICM(Curiosity):
         intrinsic_reward = intrinsic_reward.cpu().detach().numpy().reshape(n, t)
 
         combined_reward = (1. - self.intrinsic_reward_integration) * rewards + self.intrinsic_reward_integration * intrinsic_reward
-        return combined_reward, intrinsic_reward, rewards
+        return combined_reward, intrinsic_reward, rewards, next_states_hat
 
     def loss(self, policy_loss: Tensor, states: Tensor, next_states: Tensor, actions: Tensor) -> Tensor:
         next_states_latent, next_states_hat, actions_hat = self.model(states, next_states, actions)
