@@ -1,12 +1,15 @@
 from abc import ABCMeta, abstractmethod
+from os import stat
 from typing import Generator
 
 import numpy as np
 import torch
 from torch import Tensor, nn
+from torch._C import set_flush_denormal
 
 from curiosity.base import Curiosity, CuriosityFactory
 from envs import Converter
+from icmppo.rewards import reward
 from reporters import Reporter, NoReporter
 
 
@@ -102,6 +105,7 @@ class ReconstructForwardModel(nn.Module):
             nn.ReLU(),
             nn.ConvTranspose2d(32, n_input_channels, kernel_size=3, stride=2, padding=0),
         )
+        
 
     def forward(self, state_latent: Tensor, action: Tensor):
         action = self.action_encoder(action.long() if self.action_converter.discrete else action).squeeze()
@@ -114,7 +118,6 @@ class ReconstructForwardModel(nn.Module):
         x = torch.cat((action, state_latent), dim=1)
         x = self.hidden(x)
         return x
-
 
 class ReconstructInverseModel(nn.Module):
     # 2d state and 2d next_state are combined by concatenating their channels
@@ -177,6 +180,12 @@ class CNNICMReconstructModel(ICMModel):
         next_state_hat = self.forward_model(state, action)
         action_hat = self.inverse_model(state, next_state)
         return next_state, next_state_hat, action_hat
+
+    def predict_next_state(self, state: Tensor, action: Tensor):
+        with torch.no_grad():
+            state = self.encoder(state)
+            next_state_hat = self.forward_model(state, action)
+        return next_state_hat
 
     @staticmethod
     def factory() -> 'ICMModelFactory':
