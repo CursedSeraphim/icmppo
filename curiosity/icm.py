@@ -181,12 +181,6 @@ class CNNICMReconstructModel(ICMModel):
         action_hat = self.inverse_model(state, next_state)
         return next_state, next_state_hat, action_hat
 
-    def predict_next_state(self, state: Tensor, action: Tensor):
-        with torch.no_grad():
-            state = self.encoder(state)
-            next_state_hat = self.forward_model(state, action)
-        return next_state_hat
-
     @staticmethod
     def factory() -> 'ICMModelFactory':
         return CNNICMReconstructModelFactory()
@@ -318,6 +312,12 @@ class ICM(Curiosity):
 
     def parameters(self) -> Generator[nn.Parameter, None, None]:
         return self.model.parameters()
+
+    def predict_next_state(self, state: Tensor, action: Tensor):
+        with torch.no_grad():
+            state = self.model.encoder(state)
+            next_state_hat = self.model.forward_model(state, action)
+        return next_state_hat
 
     def reward(self, rewards: np.ndarray, states: np.ndarray, actions: np.ndarray) -> np.ndarray:
         
