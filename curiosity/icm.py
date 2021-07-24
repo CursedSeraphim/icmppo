@@ -86,15 +86,14 @@ class ReconstructForwardModel(nn.Module):
         self.action_converter = action_converter
         self.state_converter = state_converter
         # embedding of same shape as 2d state 1 channel
-        # TODO debug whether this is 11x11
-        # action_latent_features = state_converter.shape[1] * state_converter.shape[2]
+        action_latent_features = state_converter.shape[1] * state_converter.shape[2]
         n_input_channels = state_converter.shape[0]
-        # if action_converter.discrete:
-        #     self.action_encoder = nn.Embedding(action_converter.shape[0], action_latent_features)
-        # else:
-        #     self.action_encoder = nn.Linear(action_converter.shape[0], action_latent_features)
+        if action_converter.discrete:
+            self.action_encoder = nn.Embedding(action_converter.shape[0], action_latent_features)
+        else:
+            self.action_encoder = nn.Linear(action_converter.shape[0], action_latent_features)
 
-        # conv layers need an additional obs channel (because we will stack action encoder and state in forward)
+        # conv layers that take 2 * obs channels (because we will stack action encoder and state in forward)
         # and to produce the observation space shape as output (similar to reconstructICMModel zfnet style)
         self.hidden = nn.Sequential(
             nn.Conv2d(n_input_channels + 1, 32, kernel_size=3, stride=2, padding=0),
@@ -106,21 +105,49 @@ class ReconstructForwardModel(nn.Module):
             nn.ConvTranspose2d(32, n_input_channels, kernel_size=3, stride=2, padding=0),
         )
         
+        # code for repeating copies of action as an additional colour channel
+
+        # super().__init__()
+        # self.action_converter = action_converter
+        # self.state_converter = state_converter
+        # # embedding of same shape as 2d state 1 channel
+        # n_input_channels = state_converter.shape[0]
+        
+        # # conv layers need an additional obs channel (because we will stack action encoder and state in forward)
+        # # and to produce the observation space shape as output (similar to reconstructICMModel zfnet style)
+        # self.hidden = nn.Sequential(
+        #     nn.Conv2d(n_input_channels + 1, 32, kernel_size=3, stride=2, padding=0),
+        #     nn.ReLU(),
+        #     nn.Conv2d(32, 64, kernel_size=3, stride=2, padding=0),
+        #     nn.ReLU(),
+        #     nn.ConvTranspose2d(64, 32, kernel_size=3, stride=2, padding=0),
+        #     nn.ReLU(),
+        #     nn.ConvTranspose2d(32, n_input_channels, kernel_size=3, stride=2, padding=0),
+        # )
+        
 
     def forward(self, state_latent: Tensor, action: Tensor):
-        # action = self.action_encoder(action.long() if self.action_converter.discrete else action).squeeze()
-        # if len(action.shape) == 1:
-        #     action = action.unsqueeze(0)
-
-        # repeat each scalar action and turn them into 1xHxW duplicates of the original
-        action = action.repeat(self.state_converter.shape[1]*self.state_converter.shape[2], 1)
-        action = action.T
-        # reshape action to (-1, 1, 11, 11) dynamically to obs space shape -1, 1, H, W
+        action = self.action_encoder(action.long() if self.action_converter.discrete else action).squeeze()
+        if len(action.shape) == 1:
+            action = action.unsqueeze(0)
+        # reshape action after encoder to (-1, 1, 11, 11) dynamically to obs space shape -1, 1, H, W
         action = action.reshape(-1, 1, self.state_converter.shape[1], self.state_converter.shape[2])
         # stack encoded action and state along channels before giving to hidden
         x = torch.cat((action, state_latent), dim=1)
         x = self.hidden(x)
         return x
+        
+        # code for repeating copies of action as an additional colour channel
+
+        # # repeat each scalar action and turn them into 1xHxW duplicates of the original
+        # action = action.repeat(self.state_converter.shape[1]*self.state_converter.shape[2], 1)
+        # action = action.T
+        # # reshape action to (-1, 1, 11, 11) dynamically to obs space shape -1, 1, H, W
+        # action = action.reshape(-1, 1, self.state_converter.shape[1], self.state_converter.shape[2])
+        # # stack encoded action and state along channels before giving to hidden
+        # x = torch.cat((action, state_latent), dim=1)
+        # x = self.hidden(x)
+        # return x
 
 class ReconstructInverseModel(nn.Module):
     # 2d state and 2d next_state are combined by concatenating their channels
