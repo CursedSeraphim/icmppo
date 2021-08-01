@@ -284,7 +284,8 @@ class MlpICMModel(ICMModel):
 
     @property
     def recurrent(self) -> bool:
-        return False
+        # enable batch-wise
+        return True
 
     def forward(self, state: Tensor, next_state: Tensor, action: Tensor):
         state = self.encoder(state)
