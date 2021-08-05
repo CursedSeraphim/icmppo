@@ -299,6 +299,39 @@ class MlpICMModel(ICMModel):
         return MlpICMModelFactory()
 
 
+class MlpICMReconstructModel(ICMModel):
+    def __init__(self, state_converter: Converter, action_converter: Converter):
+        assert len(state_converter.shape) == 1, 'Only flat spaces supported by MLP model'
+        assert len(action_converter.shape) == 1, 'Only flat action spaces supported by MLP model'
+        super().__init__(state_converter, action_converter)
+        self.encoder = nn.Sequential(
+            nn.Linear(state_converter.shape[0], 128),
+            nn.ReLU(inplace=True),
+            nn.Linear(128, 128),
+            nn.ReLU(inplace=True),
+            nn.Linear(128, 4),
+
+        )
+        self.forward_model = ForwardModel(action_converter, 4)
+        self.inverse_model = InverseModel(action_converter, 128)
+
+    @property
+    def recurrent(self) -> bool:
+        # enable batch-wise
+        return True
+
+    def forward(self, state: Tensor, next_state: Tensor, action: Tensor):
+        state = self.encoder(state)
+        next_state = self.encoder(next_state)
+        next_state_hat = self.forward_model(state, action)
+        action_hat = self.inverse_model(state, next_state)
+        return next_state, next_state_hat, action_hat
+
+    @staticmethod
+    def factory() -> 'ICMModelFactory':
+        return MlpICMModelFactory()
+
+
 class MlpICMModelFactory(ICMModelFactory):
     def create(self, state_converter: Converter, action_converter: Converter) -> ICMModel:
         return MlpICMModel(state_converter, action_converter)
