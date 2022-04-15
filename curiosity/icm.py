@@ -6,10 +6,11 @@ import numpy as np
 import torch
 from torch import Tensor, nn
 from torch._C import set_flush_denormal
+from stable_baselines3.common.running_mean_std import RunningMeanStd
 
 from curiosity.base import Curiosity, CuriosityFactory
 from envs import Converter
-from icmppo.rewards import reward
+# from icmppo.rewards import reward
 from reporters import Reporter, NoReporter
 
 
@@ -517,21 +518,6 @@ class StateModelFactory(CuriosityFactory):
                    self.intrinsic_reward_integration, self.reporter)
 
 
-class ICMFactory(CuriosityFactory):
-    def __init__(self, model_factory: ICMModelFactory, policy_weight: float, reward_scale: float, weight: float,
-                 intrinsic_reward_integration: float, reporter: Reporter):
-        self.policy_weight = policy_weight
-        self.model_factory = model_factory
-        self.scale = reward_scale
-        self.weight = weight
-        self.intrinsic_reward_integration = intrinsic_reward_integration
-        self.reporter = reporter
-
-    def create(self, state_converter: Converter, action_converter: Converter):
-        return ICM(state_converter, action_converter, self.model_factory, self.policy_weight, self.scale, self.weight,
-                   self.intrinsic_reward_integration, self.reporter)
-
-
 class ICM(Curiosity):
     """
     Implements the Intrinsic Curiosity Module described in paper: https://arxiv.org/pdf/1705.05363.pdf
@@ -546,7 +532,7 @@ class ICM(Curiosity):
 
     def __init__(self, state_converter: Converter, action_converter: Converter, model_factory: ICMModelFactory,
                  policy_weight: float, reward_scale: float, weight: float, intrinsic_reward_integration: float,
-                 reporter: Reporter):
+                 reporter: Reporter, norm_rewards=False):
         """
 
         :param state_converter: state converter
@@ -568,6 +554,9 @@ class ICM(Curiosity):
         self.weight = weight
         self.intrinsic_reward_integration = intrinsic_reward_integration
         self.reporter = reporter
+        self.norm_rewards = norm_rewards
+        self.return_rms = RunningMeanStd(shape=())
+        self.epsilon = 1e-8
 
     def parameters(self) -> Generator[nn.Parameter, None, None]:
         return self.model.parameters()
@@ -590,7 +579,11 @@ class ICM(Curiosity):
         next_states_latent, next_states_hat, _ = self.model(states, next_states, actions)
         # l2 norm across all but first dimension
         intrinsic_reward = self.reward_scale / 2 * (next_states_hat - next_states_latent).norm(2, dim=tuple(range(1, next_states_hat.ndim))).pow(2)
-        intrinsic_reward = intrinsic_reward.cpu().detach().numpy().reshape(n, t)
+        intrinsic_reward = intrinsic_reward.cpu().detach().numpy()
+        if self.norm_rewards:
+            self.return_rms.update(intrinsic_reward)
+            intrinsic_reward = intrinsic_reward / np.sqrt(self.return_rms.var + self.epsilon)
+        intrinsic_reward = intrinsic_reward.reshape(n, t)
 
         combined_reward = (1. - self.intrinsic_reward_integration) * rewards + self.intrinsic_reward_integration * intrinsic_reward
         return combined_reward, intrinsic_reward, rewards, next_states_hat
@@ -608,7 +601,8 @@ class ICM(Curiosity):
 
     @staticmethod
     def factory(model_factory: ICMModelFactory, policy_weight: float, reward_scale: float,
-                weight: float, intrinsic_reward_integration: float, reporter: Reporter = NoReporter()) -> 'ICMFactory':
+                weight: float, intrinsic_reward_integration: float, reporter: Reporter = NoReporter(),
+                norm_rewards=False) -> 'ICMFactory':
         """
         Creates the factory for the ``ICM``
         :param model_factory: model factory
@@ -622,19 +616,21 @@ class ICM(Curiosity):
         :param reporter reporter used to report training statistics
         :return: factory
         """
-        return ICMFactory(model_factory, policy_weight, reward_scale, weight, intrinsic_reward_integration, reporter)
+        return ICMFactory(model_factory, policy_weight, reward_scale, weight, intrinsic_reward_integration,
+                          reporter, norm_rewards)
 
 
 class ICMFactory(CuriosityFactory):
     def __init__(self, model_factory: ICMModelFactory, policy_weight: float, reward_scale: float, weight: float,
-                 intrinsic_reward_integration: float, reporter: Reporter):
+                 intrinsic_reward_integration: float, reporter: Reporter, norm_rewards=False):
         self.policy_weight = policy_weight
         self.model_factory = model_factory
         self.scale = reward_scale
         self.weight = weight
         self.intrinsic_reward_integration = intrinsic_reward_integration
         self.reporter = reporter
+        self.norm_rewards = norm_rewards
 
     def create(self, state_converter: Converter, action_converter: Converter):
         return ICM(state_converter, action_converter, self.model_factory, self.policy_weight, self.scale, self.weight,
-                   self.intrinsic_reward_integration, self.reporter)
+                   self.intrinsic_reward_integration, self.reporter, self.norm_rewards)
